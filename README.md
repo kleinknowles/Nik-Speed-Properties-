@@ -1,1 +1,1 @@
-# Nik-properties
+# Nik Speed Properties LLC
