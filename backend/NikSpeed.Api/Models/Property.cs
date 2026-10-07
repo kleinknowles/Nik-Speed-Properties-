@@ -22,7 +22,7 @@ public record CreatePropertyRequest(
     int Bedrooms, int Bathrooms, int Area, string AreaUnit, string ImageUrl,
     string Description, string AgentName, string AgentPhone);
 
-public record CheckoutRequest(string PlanId, string AdvertiserName, string Email);
+public record CheckoutRequest(string PlanId, string AdvertiserName, string Email, string PaymentMethod = "card");
 
 public record EnquiryRequest(Guid PropertyId, string Name, string Email, string Phone, string Message);
 

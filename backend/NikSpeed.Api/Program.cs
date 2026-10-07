@@ -173,11 +173,12 @@ app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrin
     var userId = GetUserId(principal); if (userId is null) return Results.Unauthorized();
     var plan = ListingPlan.All.SingleOrDefault(item => item.Id == request.PlanId); if (plan is null) return Results.BadRequest(new { message = "Unknown plan." });
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.AdvertiserName)) return Results.BadRequest(new { message = "A billing name and email are required." });
+    if (request.PaymentMethod is not ("card" or "mtn" or "airtel")) return Results.BadRequest(new { message = "Choose card, MTN Mobile Money, or Airtel Money." });
     var transaction = new PaymentTransaction { UserId = userId.Value, PlanId = plan.Id, Amount = plan.Price, ProviderReference = $"nikspeed-{userId:N}-{Guid.NewGuid():N}" }; database.Payments.Add(transaction); await database.SaveChangesAsync();
     try
     {
         var checkout = await payments.CreateCheckout(plan, request, transaction.ProviderReference);
-        if (checkout.Status == "configuration_required")
+        if (checkout.Status is "configuration_required" or "unsupported_payment_method" || string.IsNullOrWhiteSpace(checkout.PaymentLink))
         {
             database.Payments.Remove(transaction);
             await database.SaveChangesAsync();

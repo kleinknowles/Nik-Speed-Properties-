@@ -12,6 +12,15 @@ public class FlutterwavePaymentService(HttpClient client, IConfiguration configu
     {
         var settings = Settings;
         var secretKey = settings["SecretKey"];
+        var paymentOption = (request.PaymentMethod ?? "card").Trim().ToLowerInvariant() switch
+        {
+            "card" => "card",
+            "mtn" or "airtel" or "mobilemoney" => "mobilemoneyuganda",
+            _ => ""
+        };
+
+        if (string.IsNullOrWhiteSpace(paymentOption))
+            return new CheckoutResult(transactionReference, null, "unsupported_payment_method");
 
         if (string.IsNullOrWhiteSpace(secretKey))
             return new CheckoutResult(transactionReference, null, "configuration_required");
@@ -23,6 +32,7 @@ public class FlutterwavePaymentService(HttpClient client, IConfiguration configu
             tx_ref = transactionReference,
             amount = plan.Price,
             currency = "UGX",
+            payment_options = paymentOption,
             redirect_url = settings["RedirectUrl"],
             customer = new { email = request.Email, name = request.AdvertiserName },
             customizations = new { title = "Nik Speed Properties LLC", description = $"{plan.Name} listing package" }
