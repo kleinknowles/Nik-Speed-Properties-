@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -30,11 +31,30 @@ var app = builder.Build();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseStaticFiles();
 
 using (var scope = app.Services.CreateScope())
 {
     var database = scope.ServiceProvider.GetRequiredService<MarketplaceDbContext>();
     database.Database.EnsureCreated();
+    var connection = database.Database.GetDbConnection();
+    await connection.OpenAsync();
+    using (var columns = connection.CreateCommand())
+    {
+        columns.CommandText = "PRAGMA table_info('Properties')";
+        using var reader = await columns.ExecuteReaderAsync();
+        var hasVideoUrl = false;
+        while (await reader.ReadAsync())
+            if (reader.GetString(1) == "VideoUrl") hasVideoUrl = true;
+        await reader.CloseAsync();
+        if (!hasVideoUrl)
+        {
+            columns.CommandText = "ALTER TABLE Properties ADD COLUMN VideoUrl TEXT NOT NULL DEFAULT ''";
+            await columns.ExecuteNonQueryAsync();
+        }
+    }
+    await connection.CloseAsync();
+    Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "App_Data", "uploads"));
     database.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS Reservations (Id TEXT NOT NULL PRIMARY KEY, PropertyId TEXT NOT NULL, GuestName TEXT NOT NULL, GuestEmail TEXT NOT NULL, GuestPhone TEXT NOT NULL, CheckIn TEXT NOT NULL, CheckOut TEXT NOT NULL, Guests INTEGER NOT NULL, TotalAmount INTEGER NOT NULL, Status TEXT NOT NULL, CreatedAt TEXT NOT NULL)");
     if (!database.Properties.Any())
     {
@@ -87,10 +107,52 @@ app.MapPost("/api/properties", async (CreateListingRequest request, ClaimsPrinci
     var publishedListings = await database.Properties.CountAsync(property => property.OwnerId == ownerId);
     if (publishedListings >= listingCredits) return Results.StatusCode(StatusCodes.Status402PaymentRequired);
     var user = await database.Users.FindAsync(ownerId);
-    var property = new PropertyEntity { OwnerId = ownerId, Title = request.Title, Type = request.Type, Location = request.Location, Price = request.Price, Currency = request.Currency, Bedrooms = request.Bedrooms, Bathrooms = request.Bathrooms, Area = request.Area, AreaUnit = request.AreaUnit, ImageUrl = request.ImageUrl, Description = request.Description, AgentName = user!.Name, AgentPhone = request.AgentPhone };
+    var property = new PropertyEntity { OwnerId = ownerId, Title = request.Title, Type = request.Type, Location = request.Location, Price = request.Price, Currency = request.Currency, Bedrooms = request.Bedrooms, Bathrooms = request.Bathrooms, Area = request.Area, AreaUnit = request.AreaUnit, ImageUrl = request.ImageUrl, VideoUrl = request.VideoUrl, Description = request.Description, AgentName = user!.Name, AgentPhone = request.AgentPhone };
     database.Properties.Add(property); await database.SaveChangesAsync();
     return Results.Created($"/api/properties/{property.Id}", Map(property));
 }).RequireAuthorization();
+
+app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principal, IWebHostEnvironment environment) =>
+{
+    if (GetUserId(principal) is null) return Results.Unauthorized();
+    var kind = request.Query["kind"].ToString();
+    if (kind is not ("image" or "video")) return Results.BadRequest(new { message = "Choose an image or video upload." });
+    var form = await request.ReadFormAsync();
+    var file = form.Files.GetFile("file");
+    if (file is null || file.Length == 0) return Results.BadRequest(new { message = "Choose a file to upload." });
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    var allowed = kind == "image"
+        ? new Dictionary<string, string> { [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".png"] = "image/png", [".webp"] = "image/webp" }
+        : new Dictionary<string, string> { [".mp4"] = "video/mp4", [".mov"] = "video/quicktime", [".webm"] = "video/webm" };
+    var maxBytes = kind == "image" ? 15L * 1024 * 1024 : 120L * 1024 * 1024;
+    if (!allowed.TryGetValue(extension, out var contentType) || file.Length > maxBytes)
+        return Results.BadRequest(new { message = kind == "image" ? "Upload a JPG, PNG or WebP image up to 15 MB." : "Upload an MP4, MOV or WebM video up to 120 MB." });
+    if (!string.Equals(file.ContentType, contentType, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { message = "The file type could not be verified. Choose a supported image or video." });
+    var header = new byte[12];
+    await using (var input = file.OpenReadStream()) _ = await input.ReadAsync(header);
+    if (!HasValidMediaSignature(kind, extension, header))
+        return Results.BadRequest(new { message = "The uploaded file is not a valid supported image or video." });
+    var fileName = $"{Guid.NewGuid():N}{extension}";
+    var directory = Path.Combine(environment.ContentRootPath, "App_Data", "uploads");
+    Directory.CreateDirectory(directory);
+    await using (var output = File.Create(Path.Combine(directory, fileName)))
+    await using (var input = file.OpenReadStream()) await input.CopyToAsync(output);
+    return Results.Ok(new { url = $"/api/uploads/{fileName}", kind, contentType });
+}).RequireAuthorization().WithMetadata(new RequestSizeLimitAttribute(130L * 1024 * 1024));
+
+app.MapGet("/api/uploads/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+{
+    if (fileName != Path.GetFileName(fileName)) return Results.BadRequest();
+    var path = Path.Combine(environment.ContentRootPath, "App_Data", "uploads", fileName);
+    if (!File.Exists(path)) return Results.NotFound();
+    var contentType = Path.GetExtension(fileName).ToLowerInvariant() switch
+    {
+        ".jpg" or ".jpeg" => "image/jpeg", ".png" => "image/png", ".webp" => "image/webp",
+        ".mp4" => "video/mp4", ".mov" => "video/quicktime", ".webm" => "video/webm", _ => "application/octet-stream"
+    };
+    return Results.File(path, contentType, enableRangeProcessing: true);
+});
 
 app.MapPut("/api/properties/{id:guid}", async (Guid id, CreateListingRequest request, ClaimsPrincipal principal, MarketplaceDbContext database) =>
 {
@@ -226,7 +288,13 @@ app.Run();
 static Guid? GetUserId(ClaimsPrincipal principal) => Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
 static string HashPassword(string password) { var salt = RandomNumberGenerator.GetBytes(16); var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210000, HashAlgorithmName.SHA512, 32); return $"{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}"; }
 static bool VerifyPassword(string password, string value) { try { var parts = value.Split('.'); return parts.Length == 2 && CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(password, Convert.FromBase64String(parts[0]), 210000, HashAlgorithmName.SHA512, 32), Convert.FromBase64String(parts[1])); } catch (FormatException) { return false; } }
-static Property Map(PropertyEntity item) => new(item.Id, item.Title, item.Type, item.Location, item.Price, item.Currency, item.Bedrooms, item.Bathrooms, item.Area, item.AreaUnit, item.ImageUrl, item.Featured, item.Description, item.AgentName, item.AgentPhone);
+static Property Map(PropertyEntity item) => new(item.Id, item.Title, item.Type, item.Location, item.Price, item.Currency, item.Bedrooms, item.Bathrooms, item.Area, item.AreaUnit, item.ImageUrl, item.Featured, item.Description, item.AgentName, item.AgentPhone, item.VideoUrl);
+static bool HasValidMediaSignature(string kind, string extension, byte[] header) => kind == "image"
+    ? extension is ".jpg" or ".jpeg" ? header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF
+        : extension == ".png" ? header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47
+        : extension == ".webp" && header[0] == 0x52 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x46 && header[8] == 0x57 && header[9] == 0x45 && header[10] == 0x42 && header[11] == 0x50
+    : extension is ".mp4" or ".mov" ? header[4] == 0x66 && header[5] == 0x74 && header[6] == 0x79 && header[7] == 0x70
+        : extension == ".webm" && header[0] == 0x1A && header[1] == 0x45 && header[2] == 0xDF && header[3] == 0xA3;
 static PropertyEntity[] SeedProperties() =>
 [
     new() { Title = "Modern villa with Lake Victoria views", Type = "House for sale", Location = "Entebbe, Wakiso", Price = 850000000, Bedrooms = 5, Bathrooms = 4, Area = 450, ImageUrl = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=85", Featured = true, Description = "A light-filled family home in a peaceful, secure estate.", AgentName = "Sarah Namusoke", AgentPhone = "+256 700 123 456" },

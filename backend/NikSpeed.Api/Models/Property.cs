@@ -15,12 +15,13 @@ public record Property(
     bool Featured,
     string Description,
     string AgentName,
-    string AgentPhone);
+    string AgentPhone,
+    string VideoUrl = "");
 
 public record CreatePropertyRequest(
     string Title, string Type, string Location, int Price, string Currency,
     int Bedrooms, int Bathrooms, int Area, string AreaUnit, string ImageUrl,
-    string Description, string AgentName, string AgentPhone);
+    string Description, string AgentName, string AgentPhone, string VideoUrl = "");
 
 public record CheckoutRequest(string PlanId, string AdvertiserName, string Email, string PaymentMethod = "card");
 
