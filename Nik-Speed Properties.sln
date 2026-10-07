@@ -1,0 +1,18 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.0.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NikSpeed.Api", "backend\NikSpeed.Api\NikSpeed.Api.csproj", "{9D4E0AFB-209D-4DE6-874A-24E0D22AB91D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{9D4E0AFB-209D-4DE6-874A-24E0D22AB91D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9D4E0AFB-209D-4DE6-874A-24E0D22AB91D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9D4E0AFB-209D-4DE6-874A-24E0D22AB91D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9D4E0AFB-209D-4DE6-874A-24E0D22AB91D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

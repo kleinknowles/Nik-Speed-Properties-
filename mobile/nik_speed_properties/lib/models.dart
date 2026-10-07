@@ -1,0 +1,9 @@
+class Property {
+  const Property({required this.id, required this.title, required this.type, required this.location, required this.price, required this.currency, required this.bedrooms, required this.bathrooms, required this.area, required this.areaUnit, required this.imageUrl, required this.featured, required this.description, required this.agentName, required this.agentPhone});
+  final String id, title, type, location, currency, areaUnit, imageUrl, description, agentName, agentPhone;
+  final int price, bedrooms, bathrooms, area;
+  final bool featured;
+  factory Property.fromJson(Map<String, dynamic> json) => Property(id: '${json['id']}', title: json['title'] ?? '', type: json['type'] ?? '', location: json['location'] ?? '', price: json['price'] ?? 0, currency: json['currency'] ?? 'UGX', bedrooms: json['bedrooms'] ?? 0, bathrooms: json['bathrooms'] ?? 0, area: json['area'] ?? 0, areaUnit: json['areaUnit'] ?? '', imageUrl: json['imageUrl'] ?? '', featured: json['featured'] ?? false, description: json['description'] ?? '', agentName: json['agentName'] ?? '', agentPhone: json['agentPhone'] ?? '');
+}
+class ListingPlan { const ListingPlan({required this.id,required this.name,required this.price,required this.listings,required this.featured}); final String id,name; final int price,listings; final bool featured; factory ListingPlan.fromJson(Map<String,dynamic> json)=>ListingPlan(id:json['id'],name:json['name'],price:json['price'],listings:json['listings'],featured:json['featured']); }
+class Payment { const Payment({required this.planId,required this.amount,required this.status,required this.createdAt}); final String planId,status,createdAt;final int amount; factory Payment.fromJson(Map<String,dynamic> json)=>Payment(planId:json['planId'],amount:json['amount'],status:json['status'],createdAt:json['createdAt']); }

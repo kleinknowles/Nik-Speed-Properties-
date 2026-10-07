@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "NikSpeed.Api": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:7188;http://localhost:5188"
+    }
+  }
+}
