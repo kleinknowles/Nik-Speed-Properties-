@@ -1,11 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
 export function Header({ onSignIn, onRegister }: { onSignIn?: () => void; onRegister?: () => void }) {
   const [savedCount, setSavedCount] = useState(0);
+  const pathname = usePathname();
+
+  const pageTheme = pathname === "/" ? "home"
+    : pathname.startsWith("/listings/") ? "property"
+    : pathname.startsWith("/listings") ? "listings"
+    : pathname.startsWith("/saved") ? "saved"
+    : pathname.startsWith("/advertise") ? "advertise"
+    : pathname.startsWith("/about") ? "about"
+    : pathname.startsWith("/contact") ? "contact"
+    : pathname.startsWith("/dashboard") ? "dashboard"
+    : pathname.startsWith("/payment") ? "payment"
+    : pathname.startsWith("/terms") ? "terms"
+    : pathname.startsWith("/privacy") ? "privacy" : "home";
 
   useEffect(() => {
     const updateSavedCount = () => {
@@ -23,7 +37,7 @@ export function Header({ onSignIn, onRegister }: { onSignIn?: () => void; onRegi
     };
   }, []);
 
-  return <header className="site-header"><Link className="brand" href="/" aria-label="Nik-Speed Properties LLC home">Nik Speed <span>Properties LLC</span></Link><nav className="site-nav" aria-label="Main navigation"><Link href="/listings">Browse homes</Link><Link href="/saved">Saved homes{savedCount > 0 ? ` (${savedCount})` : ""}</Link><Link href="/advertise">Advertise</Link><Link href="/about">About us</Link><Link href="/contact">Contact</Link><Link href="/dashboard">Dashboard</Link>{onSignIn && <button type="button" className="home-signin" onClick={onSignIn}>Sign in</button>}{onRegister && <button type="button" className="home-register" onClick={onRegister}>Create account</button>}</nav></header>;
+  return <header className="site-header" data-page-theme={pageTheme}><Link className="brand" href="/" aria-label="Nik-Speed Properties LLC home">Nik Speed <span>Properties LLC</span></Link><nav className="site-nav" aria-label="Main navigation"><Link href="/listings" aria-current={pageTheme === "listings" ? "page" : undefined}>Browse homes</Link><Link href="/saved" aria-current={pageTheme === "saved" ? "page" : undefined}>Saved homes{savedCount > 0 ? ` (${savedCount})` : ""}</Link><Link href="/advertise" aria-current={pageTheme === "advertise" ? "page" : undefined}>Advertise</Link><Link href="/about" aria-current={pageTheme === "about" ? "page" : undefined}>About us</Link><Link href="/contact" aria-current={pageTheme === "contact" ? "page" : undefined}>Contact</Link><Link href="/dashboard" aria-current={pageTheme === "dashboard" ? "page" : undefined}>Dashboard</Link>{onSignIn && <button type="button" className="home-signin" onClick={onSignIn}>Sign in</button>}{onRegister && <button type="button" className="home-register" onClick={onRegister}>Create account</button>}</nav></header>;
 }
 
 export function Footer() {
