@@ -265,7 +265,7 @@ app.MapPost("/api/contact", (ContactRequest request) =>
 {
     if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Message))
         return Results.BadRequest(new { message = "Name, email, and message are required." });
-    return Results.Ok(new { message = "Thanks for contacting Nik Speed Properties LLC. Our team will reply shortly." });
+    return Results.Ok(new { message = "Thanks for contacting Nik-Speed Properties LLC. Our team will reply shortly." });
 });
 
 app.MapGet("/api/plans", () => Results.Ok(ListingPlan.All));

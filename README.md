@@ -1,6 +1,6 @@
 # Nik-Speed Properties LLC
 
-A property marketplace for land, rentals, and homes for sale, operated by Nik Speed Properties LLC. Advertisers buy listing credits before publishing properties.
+A property marketplace for land, rentals, and homes for sale, operated by Nik-Speed Properties LLC. Advertisers buy listing credits before publishing properties.
 
 ## Projects
 

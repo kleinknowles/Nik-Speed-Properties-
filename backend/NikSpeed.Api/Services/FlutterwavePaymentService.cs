@@ -50,7 +50,7 @@ public class FlutterwavePaymentService(HttpClient client, IConfiguration configu
             payment_options = paymentOption,
             redirect_url = redirectUrl,
             customer = new { email = request.Email, name = request.AdvertiserName },
-            customizations = new { title = "Nik Speed Properties LLC", description = $"{plan.Name} listing package" }
+            customizations = new { title = "Nik-Speed Properties LLC", description = $"{plan.Name} listing package" }
         });
         response.EnsureSuccessStatusCode();
         var payload = await response.Content.ReadFromJsonAsync<FlutterwaveResponse>();
