@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -11,6 +13,9 @@ using NikSpeed.Api.Models;
 using NikSpeed.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+const long maxUploadRequestBytes = 400L * 1024 * 1024;
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxUploadRequestBytes);
+builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = maxUploadRequestBytes);
 if (OperatingSystem.IsWindows() && string.Equals(builder.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
     builder.Logging.ClearProviders().AddConsole();
 var jwt = builder.Configuration.GetSection("Jwt");
@@ -67,7 +72,12 @@ using (var scope = app.Services.CreateScope())
 {
     var database = scope.ServiceProvider.GetRequiredService<MarketplaceDbContext>();
     await database.Database.EnsureCreatedAsync();
-    if (!usePostgres)
+    if (usePostgres)
+    {
+        await database.Database.ExecuteSqlRawAsync("ALTER TABLE \"Properties\" ADD COLUMN IF NOT EXISTS \"ImageUrls\" text NOT NULL DEFAULT '[]'");
+        await database.Database.ExecuteSqlRawAsync("ALTER TABLE \"Properties\" ADD COLUMN IF NOT EXISTS \"VideoUrls\" text NOT NULL DEFAULT '[]'");
+    }
+    else
     {
         var connection = database.Database.GetDbConnection();
         await connection.OpenAsync();
@@ -76,12 +86,29 @@ using (var scope = app.Services.CreateScope())
             columns.CommandText = "PRAGMA table_info('Properties')";
             using var reader = await columns.ExecuteReaderAsync();
             var hasVideoUrl = false;
+            var hasImageUrls = false;
+            var hasVideoUrls = false;
             while (await reader.ReadAsync())
-                if (reader.GetString(1) == "VideoUrl") hasVideoUrl = true;
+                switch (reader.GetString(1))
+                {
+                    case "VideoUrl": hasVideoUrl = true; break;
+                    case "ImageUrls": hasImageUrls = true; break;
+                    case "VideoUrls": hasVideoUrls = true; break;
+                }
             await reader.CloseAsync();
             if (!hasVideoUrl)
             {
                 columns.CommandText = "ALTER TABLE Properties ADD COLUMN VideoUrl TEXT NOT NULL DEFAULT ''";
+                await columns.ExecuteNonQueryAsync();
+            }
+            if (!hasImageUrls)
+            {
+                columns.CommandText = "ALTER TABLE Properties ADD COLUMN ImageUrls TEXT NOT NULL DEFAULT '[]'";
+                await columns.ExecuteNonQueryAsync();
+            }
+            if (!hasVideoUrls)
+            {
+                columns.CommandText = "ALTER TABLE Properties ADD COLUMN VideoUrls TEXT NOT NULL DEFAULT '[]'";
                 await columns.ExecuteNonQueryAsync();
             }
         }
@@ -149,13 +176,16 @@ app.MapGet("/api/properties/{id:guid}", async (Guid id, MarketplaceDbContext dat
 app.MapPost("/api/properties", async (CreateListingRequest request, ClaimsPrincipal principal, MarketplaceDbContext database) =>
 {
     var ownerId = GetUserId(principal); if (ownerId is null) return Results.Unauthorized();
-    if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Type) || string.IsNullOrWhiteSpace(request.Location) || request.Price <= 0 || request.Area <= 0 || string.IsNullOrWhiteSpace(request.ImageUrl) || string.IsNullOrWhiteSpace(request.Description) || string.IsNullOrWhiteSpace(request.AgentPhone)) return Results.BadRequest(new { message = "Complete the required property details and enter a valid price and area." });
+    if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Type) || string.IsNullOrWhiteSpace(request.Location) || request.Price <= 0 || request.Area <= 0 || (request.ImageUrls ?? []).All(string.IsNullOrWhiteSpace) && string.IsNullOrWhiteSpace(request.ImageUrl) || string.IsNullOrWhiteSpace(request.Description) || string.IsNullOrWhiteSpace(request.AgentPhone)) return Results.BadRequest(new { message = "Complete the required property details and enter a valid price and area." });
     var paidPlans = await database.Payments.Where(payment => payment.UserId == ownerId && payment.Status == "paid").Select(payment => payment.PlanId).ToListAsync();
     var listingCredits = paidPlans.Sum(planId => ListingPlan.All.SingleOrDefault(plan => plan.Id == planId)?.Listings ?? 0);
     var publishedListings = await database.Properties.CountAsync(property => property.OwnerId == ownerId);
     if (publishedListings >= listingCredits) return Results.StatusCode(StatusCodes.Status402PaymentRequired);
     var user = await database.Users.FindAsync(ownerId);
-    var property = new PropertyEntity { OwnerId = ownerId, Title = request.Title, Type = request.Type, Location = request.Location, Price = request.Price, Currency = request.Currency, Bedrooms = request.Bedrooms, Bathrooms = request.Bathrooms, Area = request.Area, AreaUnit = request.AreaUnit, ImageUrl = request.ImageUrl, VideoUrl = request.VideoUrl, Description = request.Description, AgentName = user!.Name, AgentPhone = request.AgentPhone };
+    var imageUrls = NormalizeMediaUrls(request.ImageUrls, request.ImageUrl);
+    var videoUrls = NormalizeMediaUrls(request.VideoUrls, request.VideoUrl);
+    if (imageUrls.Length is < 1 or > 10 || videoUrls.Length > 3) return Results.BadRequest(new { message = "Add 1–10 photos and up to 3 videos per property." });
+    var property = new PropertyEntity { OwnerId = ownerId, Title = request.Title, Type = request.Type, Location = request.Location, Price = request.Price, Currency = request.Currency, Bedrooms = request.Bedrooms, Bathrooms = request.Bathrooms, Area = request.Area, AreaUnit = request.AreaUnit, ImageUrl = imageUrls[0], ImageUrls = System.Text.Json.JsonSerializer.Serialize(imageUrls), VideoUrl = videoUrls.FirstOrDefault() ?? "", VideoUrls = System.Text.Json.JsonSerializer.Serialize(videoUrls), Description = request.Description, AgentName = user!.Name, AgentPhone = request.AgentPhone };
     database.Properties.Add(property); await database.SaveChangesAsync();
     return Results.Created($"/api/properties/{property.Id}", Map(property));
 }).RequireAuthorization();
@@ -184,7 +214,7 @@ app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principa
     var key = $"{Guid.NewGuid():N}{extension}";
     await storage.SaveAsync(file, key, contentType, request.HttpContext.RequestAborted);
     return Results.Ok(new { url = $"/api/uploads/{key}", kind, contentType });
-}).RequireAuthorization().WithMetadata(new RequestSizeLimitAttribute(130L * 1024 * 1024));
+}).RequireAuthorization().WithMetadata(new RequestSizeLimitAttribute(maxUploadRequestBytes));
 
 app.MapGet("/api/uploads/{fileName}", async (string fileName, IObjectStorage storage, CancellationToken cancellationToken) =>
 {
@@ -203,6 +233,11 @@ app.MapPut("/api/properties/{id:guid}", async (Guid id, CreateListingRequest req
     property.Title = request.Title.Trim(); property.Type = request.Type.Trim(); property.Location = request.Location.Trim(); property.Price = request.Price;
     property.Currency = string.IsNullOrWhiteSpace(request.Currency) ? "UGX" : request.Currency.Trim(); property.Bedrooms = Math.Max(0, request.Bedrooms); property.Bathrooms = Math.Max(0, request.Bathrooms);
     property.Area = request.Area; property.AreaUnit = string.IsNullOrWhiteSpace(request.AreaUnit) ? "sqm" : request.AreaUnit.Trim(); property.ImageUrl = request.ImageUrl.Trim();
+    var imageUrls = NormalizeMediaUrls(request.ImageUrls, property.ImageUrl);
+    var videoUrls = NormalizeMediaUrls(request.VideoUrls, request.VideoUrl);
+    if (imageUrls.Length is < 1 or > 10 || videoUrls.Length > 3) return Results.BadRequest(new { message = "Add 1–10 photos and up to 3 videos per property." });
+    property.ImageUrl = imageUrls[0]; property.ImageUrls = System.Text.Json.JsonSerializer.Serialize(imageUrls);
+    property.VideoUrl = videoUrls.FirstOrDefault() ?? ""; property.VideoUrls = System.Text.Json.JsonSerializer.Serialize(videoUrls);
     property.Description = request.Description.Trim(); property.AgentPhone = request.AgentPhone.Trim(); await database.SaveChangesAsync();
     return Results.Ok(Map(property));
 }).RequireAuthorization();
@@ -371,7 +406,18 @@ static string NormalizePostgresConnectionString(string value)
 }
 static string HashPassword(string password) { var salt = RandomNumberGenerator.GetBytes(16); var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210000, HashAlgorithmName.SHA512, 32); return $"{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}"; }
 static bool VerifyPassword(string password, string value) { try { var parts = value.Split('.'); return parts.Length == 2 && CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(password, Convert.FromBase64String(parts[0]), 210000, HashAlgorithmName.SHA512, 32), Convert.FromBase64String(parts[1])); } catch (FormatException) { return false; } }
-static Property Map(PropertyEntity item) => new(item.Id, item.Title, item.Type, item.Location, item.Price, item.Currency, item.Bedrooms, item.Bathrooms, item.Area, item.AreaUnit, item.ImageUrl, item.Featured, item.Description, item.AgentName, item.AgentPhone, item.VideoUrl);
+static Property Map(PropertyEntity item) => new(item.Id, item.Title, item.Type, item.Location, item.Price, item.Currency, item.Bedrooms, item.Bathrooms, item.Area, item.AreaUnit, item.ImageUrl, item.Featured, item.Description, item.AgentName, item.AgentPhone, item.VideoUrl, ParseMediaUrls(item.ImageUrls, item.ImageUrl), ParseMediaUrls(item.VideoUrls, item.VideoUrl));
+static string[] NormalizeMediaUrls(string[]? urls, string? fallback) => (urls ?? []).Append(fallback ?? "").Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct(StringComparer.Ordinal).ToArray();
+static string[] ParseMediaUrls(string urlsJson, string? fallback)
+{
+    try
+    {
+        var urls = System.Text.Json.JsonSerializer.Deserialize<string[]>(urlsJson) ?? [];
+        if (urls.Length > 0) return urls;
+    }
+    catch (System.Text.Json.JsonException) { }
+    return string.IsNullOrWhiteSpace(fallback) ? [] : [fallback];
+}
 static bool HasValidMediaSignature(string kind, string extension, byte[] header) => kind == "image"
     ? extension is ".jpg" or ".jpeg" ? header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF
         : extension == ".png" ? header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47

@@ -16,7 +16,9 @@ public record Property(
     string Description,
     string AgentName,
     string AgentPhone,
-    string VideoUrl = "");
+    string VideoUrl = "",
+    string[]? ImageUrls = null,
+    string[]? VideoUrls = null);
 
 public record CreatePropertyRequest(
     string Title, string Type, string Location, int Price, string Currency,

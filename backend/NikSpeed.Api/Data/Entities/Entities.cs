@@ -24,7 +24,9 @@ public class PropertyEntity
     public int Area { get; set; }
     public string AreaUnit { get; set; } = "sqm";
     public string ImageUrl { get; set; } = string.Empty;
+    public string ImageUrls { get; set; } = "[]";
     public string VideoUrl { get; set; } = string.Empty;
+    public string VideoUrls { get; set; } = "[]";
     public bool Featured { get; set; }
     public string Description { get; set; } = string.Empty;
     public string AgentName { get; set; } = string.Empty;
