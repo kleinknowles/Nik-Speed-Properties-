@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "Nik-Speed Properties LLC",
+  "short_name": "Nik-Speed",
+  "description": "Browse homes, rentals and land across Uganda.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#fbfaf7",
+  "theme_color": "#1d2b24",
+  "icons": [
+    { "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
