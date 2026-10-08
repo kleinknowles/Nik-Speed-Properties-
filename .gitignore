@@ -1,4 +1,7 @@
 .dotnet/
+.env
+.env.*
+!.env.example
 .vs/
 .vscode/
 .pnpm-store/

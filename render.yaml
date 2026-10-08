@@ -1,0 +1,60 @@
+databases:
+  - name: nikspeed-test-db
+    databaseName: nikspeed
+    user: nikspeed
+    region: singapore
+    plan: free
+    postgresMajorVersion: "17"
+
+services:
+  - type: web
+    name: nikspeed-test-api
+    runtime: docker
+    region: singapore
+    plan: free
+    dockerContext: ./backend/NikSpeed.Api
+    dockerfilePath: ./backend/NikSpeed.Api/Dockerfile
+    healthCheckPath: /health/ready
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: Database__Provider
+        value: PostgreSQL
+      - key: ConnectionStrings__Marketplace
+        fromDatabase:
+          name: nikspeed-test-db
+          property: connectionString
+      - key: Jwt__Issuer
+        value: NikSpeed.Api
+      - key: Jwt__Audience
+        value: NikSpeed.Web
+      - key: Jwt__Key
+        generateValue: true
+      - key: WebOrigin
+        fromService:
+          type: web
+          name: nikspeed-test-web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: Flutterwave__BaseUrl
+        value: https://api.flutterwave.com/v3
+      - key: Flutterwave__SecretKey
+        value: ""
+      - key: Flutterwave__WebhookHash
+        value: ""
+      - key: Flutterwave__RedirectUrl
+        value: ""
+
+  - type: web
+    name: nikspeed-test-web
+    runtime: docker
+    region: singapore
+    plan: free
+    dockerContext: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: nikspeed-test-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME

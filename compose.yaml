@@ -1,0 +1,45 @@
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nikspeed
+      POSTGRES_USER: nikspeed
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nikspeed -d nikspeed"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend/NikSpeed.Api
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Database__Provider: PostgreSQL
+      ConnectionStrings__Marketplace: Host=database;Port=5432;Database=nikspeed;Username=nikspeed;Password=${POSTGRES_PASSWORD}
+      Jwt__Issuer: NikSpeed.Api
+      Jwt__Audience: NikSpeed.Web
+      Jwt__Key: ${JWT_KEY:?Set JWT_KEY in .env}
+      WebOrigin: ${WEB_ORIGIN:?Set WEB_ORIGIN to the deployed frontend URL}
+      Storage__UploadPath: /var/lib/nikspeed/uploads
+      Flutterwave__SecretKey: ${FLUTTERWAVE_SECRET_KEY:-}
+      Flutterwave__WebhookHash: ${FLUTTERWAVE_WEBHOOK_HASH:-}
+      Flutterwave__BaseUrl: https://api.flutterwave.com/v3
+      Flutterwave__RedirectUrl: ${FLUTTERWAVE_REDIRECT_URL:?Set FLUTTERWAVE_REDIRECT_URL to the frontend payment completion URL}
+    ports:
+      - "${API_PORT:-5188}:8080"
+    volumes:
+      - uploads-data:/var/lib/nikspeed/uploads
+
+volumes:
+  postgres-data:
+  uploads-data:

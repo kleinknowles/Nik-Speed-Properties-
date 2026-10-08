@@ -25,6 +25,21 @@ public class FlutterwavePaymentService(HttpClient client, IConfiguration configu
         if (string.IsNullOrWhiteSpace(secretKey))
             return new CheckoutResult(transactionReference, null, "configuration_required");
 
+        var redirectUrl = settings["RedirectUrl"];
+        if (string.IsNullOrWhiteSpace(redirectUrl))
+        {
+            var webOrigin = configuration["WebOrigin"]?.TrimEnd('/');
+            if (!string.IsNullOrWhiteSpace(webOrigin))
+            {
+                if (!webOrigin.Contains("://", StringComparison.Ordinal)) webOrigin = $"https://{webOrigin}";
+                redirectUrl = $"{webOrigin}/payment/complete";
+            }
+        }
+        else if (!redirectUrl.Contains("://", StringComparison.Ordinal))
+        {
+            redirectUrl = $"https://{redirectUrl.TrimEnd('/')}/payment/complete";
+        }
+
         client.BaseAddress = new Uri(settings["BaseUrl"]!);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secretKey);
         var response = await client.PostAsJsonAsync("payments", new
@@ -33,7 +48,7 @@ public class FlutterwavePaymentService(HttpClient client, IConfiguration configu
             amount = plan.Price,
             currency = "UGX",
             payment_options = paymentOption,
-            redirect_url = settings["RedirectUrl"],
+            redirect_url = redirectUrl,
             customer = new { email = request.Email, name = request.AdvertiserName },
             customizations = new { title = "Nik Speed Properties LLC", description = $"{plan.Name} listing package" }
         });

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using NikSpeed.Api.Data;
 using NikSpeed.Api.Data.Entities;
 using NikSpeed.Api.Models;
@@ -15,7 +16,17 @@ var jwtKey = jwt["Key"] ?? throw new InvalidOperationException("Jwt:Key must be 
 if (builder.Environment.IsProduction() && (jwtKey.Length < 32 || jwtKey.StartsWith("replace-this", StringComparison.OrdinalIgnoreCase)))
     throw new InvalidOperationException("Set Jwt:Key to a unique random secret of at least 32 characters before running in production.");
 
-builder.Services.AddDbContext<MarketplaceDbContext>(options => options.UseSqlite(builder.Configuration.GetConnectionString("Marketplace")));
+var connectionString = builder.Configuration.GetConnectionString("Marketplace")
+    ?? throw new InvalidOperationException("ConnectionStrings:Marketplace must be configured.");
+var usePostgres = builder.Configuration["Database:Provider"]?.Equals("PostgreSQL", StringComparison.OrdinalIgnoreCase) == true;
+if (builder.Environment.IsProduction() && !usePostgres)
+    throw new InvalidOperationException("Set Database:Provider=PostgreSQL and configure a persistent production database.");
+if (usePostgres) connectionString = NormalizePostgresConnectionString(connectionString);
+builder.Services.AddDbContext<MarketplaceDbContext>(options =>
+{
+    if (usePostgres) options.UseNpgsql(connectionString);
+    else options.UseSqlite(connectionString);
+});
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddHttpClient<FlutterwavePaymentService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options => options.TokenValidationParameters = new()
@@ -25,7 +36,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtKey))
 });
 builder.Services.AddAuthorization();
-builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+var webOrigin = builder.Configuration["WebOrigin"];
+if (builder.Environment.IsProduction() && string.IsNullOrWhiteSpace(webOrigin))
+    throw new InvalidOperationException("Set WebOrigin to the HTTPS URL of the deployed frontend.");
+if (!string.IsNullOrWhiteSpace(webOrigin) && !webOrigin.Contains("://", StringComparison.Ordinal)) webOrigin = $"https://{webOrigin}";
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+{
+    if (string.IsNullOrWhiteSpace(webOrigin)) policy.AllowAnyOrigin();
+    else policy.WithOrigins(webOrigin.TrimEnd('/'));
+    policy.AllowAnyHeader().AllowAnyMethod();
+}));
 
 var app = builder.Build();
 app.UseCors();
@@ -36,32 +56,41 @@ app.UseStaticFiles();
 using (var scope = app.Services.CreateScope())
 {
     var database = scope.ServiceProvider.GetRequiredService<MarketplaceDbContext>();
-    database.Database.EnsureCreated();
-    var connection = database.Database.GetDbConnection();
-    await connection.OpenAsync();
-    using (var columns = connection.CreateCommand())
+    await database.Database.EnsureCreatedAsync();
+    if (!usePostgres)
     {
-        columns.CommandText = "PRAGMA table_info('Properties')";
-        using var reader = await columns.ExecuteReaderAsync();
-        var hasVideoUrl = false;
-        while (await reader.ReadAsync())
-            if (reader.GetString(1) == "VideoUrl") hasVideoUrl = true;
-        await reader.CloseAsync();
-        if (!hasVideoUrl)
+        var connection = database.Database.GetDbConnection();
+        await connection.OpenAsync();
+        using (var columns = connection.CreateCommand())
         {
-            columns.CommandText = "ALTER TABLE Properties ADD COLUMN VideoUrl TEXT NOT NULL DEFAULT ''";
-            await columns.ExecuteNonQueryAsync();
+            columns.CommandText = "PRAGMA table_info('Properties')";
+            using var reader = await columns.ExecuteReaderAsync();
+            var hasVideoUrl = false;
+            while (await reader.ReadAsync())
+                if (reader.GetString(1) == "VideoUrl") hasVideoUrl = true;
+            await reader.CloseAsync();
+            if (!hasVideoUrl)
+            {
+                columns.CommandText = "ALTER TABLE Properties ADD COLUMN VideoUrl TEXT NOT NULL DEFAULT ''";
+                await columns.ExecuteNonQueryAsync();
+            }
         }
+        await connection.CloseAsync();
     }
-    await connection.CloseAsync();
-    Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "App_Data", "uploads"));
-    database.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS Reservations (Id TEXT NOT NULL PRIMARY KEY, PropertyId TEXT NOT NULL, GuestName TEXT NOT NULL, GuestEmail TEXT NOT NULL, GuestPhone TEXT NOT NULL, CheckIn TEXT NOT NULL, CheckOut TEXT NOT NULL, Guests INTEGER NOT NULL, TotalAmount INTEGER NOT NULL, Status TEXT NOT NULL, CreatedAt TEXT NOT NULL)");
+    Directory.CreateDirectory(GetUploadDirectory(app.Environment, app.Configuration));
     if (!database.Properties.Any())
     {
         database.Properties.AddRange(SeedProperties());
         database.SaveChanges();
     }
 }
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health/ready", async (MarketplaceDbContext database) =>
+{
+    if (!await database.Database.CanConnectAsync()) return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    return Results.Ok(new { status = "ready", database = "connected" });
+});
 
 app.MapPost("/api/auth/register", async (RegisterRequest request, MarketplaceDbContext database, TokenService tokens) =>
 {
@@ -112,7 +141,7 @@ app.MapPost("/api/properties", async (CreateListingRequest request, ClaimsPrinci
     return Results.Created($"/api/properties/{property.Id}", Map(property));
 }).RequireAuthorization();
 
-app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principal, IWebHostEnvironment environment) =>
+app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principal, IWebHostEnvironment environment, IConfiguration configuration) =>
 {
     if (GetUserId(principal) is null) return Results.Unauthorized();
     var kind = request.Query["kind"].ToString();
@@ -134,17 +163,17 @@ app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principa
     if (!HasValidMediaSignature(kind, extension, header))
         return Results.BadRequest(new { message = "The uploaded file is not a valid supported image or video." });
     var fileName = $"{Guid.NewGuid():N}{extension}";
-    var directory = Path.Combine(environment.ContentRootPath, "App_Data", "uploads");
+    var directory = GetUploadDirectory(environment, configuration);
     Directory.CreateDirectory(directory);
     await using (var output = File.Create(Path.Combine(directory, fileName)))
     await using (var input = file.OpenReadStream()) await input.CopyToAsync(output);
     return Results.Ok(new { url = $"/api/uploads/{fileName}", kind, contentType });
 }).RequireAuthorization().WithMetadata(new RequestSizeLimitAttribute(130L * 1024 * 1024));
 
-app.MapGet("/api/uploads/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+app.MapGet("/api/uploads/{fileName}", (string fileName, IWebHostEnvironment environment, IConfiguration configuration) =>
 {
     if (fileName != Path.GetFileName(fileName)) return Results.BadRequest();
-    var path = Path.Combine(environment.ContentRootPath, "App_Data", "uploads", fileName);
+    var path = Path.Combine(GetUploadDirectory(environment, configuration), fileName);
     if (!File.Exists(path)) return Results.NotFound();
     var contentType = Path.GetExtension(fileName).ToLowerInvariant() switch
     {
@@ -286,6 +315,30 @@ app.MapPost("/api/payments/flutterwave/webhook", async (HttpRequest request, Mar
 app.Run();
 
 static Guid? GetUserId(ClaimsPrincipal principal) => Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
+static string GetUploadDirectory(IWebHostEnvironment environment, IConfiguration configuration)
+{
+    var configuredPath = configuration["Storage:UploadPath"];
+    return string.IsNullOrWhiteSpace(configuredPath)
+        ? Path.Combine(environment.ContentRootPath, "App_Data", "uploads")
+        : Path.GetFullPath(configuredPath);
+}
+static string NormalizePostgresConnectionString(string value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("postgres" or "postgresql")) return value;
+    var credentials = uri.UserInfo.Split(':', 2);
+    var settings = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.IsDefaultPort ? 5432 : uri.Port,
+        Database = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')),
+        Username = Uri.UnescapeDataString(credentials[0]),
+        Password = credentials.Length > 1 ? Uri.UnescapeDataString(credentials[1]) : string.Empty
+    };
+    if (settings.TryGetValue("sslmode", out var sslMode) && Enum.TryParse<SslMode>(sslMode.ToString(), true, out var parsedSslMode))
+        builder.SslMode = parsedSslMode;
+    return builder.ConnectionString;
+}
 static string HashPassword(string password) { var salt = RandomNumberGenerator.GetBytes(16); var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210000, HashAlgorithmName.SHA512, 32); return $"{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}"; }
 static bool VerifyPassword(string password, string value) { try { var parts = value.Split('.'); return parts.Length == 2 && CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(password, Convert.FromBase64String(parts[0]), 210000, HashAlgorithmName.SHA512, 32), Convert.FromBase64String(parts[1])); } catch (FormatException) { return false; } }
 static Property Map(PropertyEntity item) => new(item.Id, item.Title, item.Type, item.Location, item.Price, item.Currency, item.Bedrooms, item.Bathrooms, item.Area, item.AreaUnit, item.ImageUrl, item.Featured, item.Description, item.AgentName, item.AgentPhone, item.VideoUrl);
