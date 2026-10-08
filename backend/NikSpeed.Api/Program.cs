@@ -43,7 +43,7 @@ if (builder.Configuration["Storage:Provider"]?.Equals("S3", StringComparison.Ord
 else
     builder.Services.AddSingleton<IObjectStorage, LocalObjectStorage>();
 builder.Services.AddScoped<TokenService>();
-builder.Services.AddHttpClient<FlutterwavePaymentService>();
+builder.Services.AddHttpClient<PesapalPaymentService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options => options.TokenValidationParameters = new()
 {
     ValidateIssuer = true, ValidateAudience = true, ValidateLifetime = true, ValidateIssuerSigningKey = true,
@@ -304,13 +304,12 @@ app.MapPost("/api/contact", (ContactRequest request) =>
 });
 
 app.MapGet("/api/plans", () => Results.Ok(ListingPlan.All));
-app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrincipal principal, MarketplaceDbContext database, FlutterwavePaymentService payments) =>
+app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrincipal principal, MarketplaceDbContext database, PesapalPaymentService payments) =>
 {
     var userId = GetUserId(principal); if (userId is null) return Results.Unauthorized();
     var plan = ListingPlan.All.SingleOrDefault(item => item.Id == request.PlanId); if (plan is null) return Results.BadRequest(new { message = "Unknown plan." });
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.AdvertiserName)) return Results.BadRequest(new { message = "A billing name and email are required." });
-    if (request.PaymentMethod is not ("card" or "mtn" or "airtel")) return Results.BadRequest(new { message = "Choose card, MTN Mobile Money, or Airtel Money." });
-    var transaction = new PaymentTransaction { UserId = userId.Value, PlanId = plan.Id, Amount = plan.Price, ProviderReference = $"nikspeed-{userId:N}-{Guid.NewGuid():N}" }; database.Payments.Add(transaction); await database.SaveChangesAsync();
+    var transaction = new PaymentTransaction { UserId = userId.Value, PlanId = plan.Id, Amount = plan.Price, ProviderReference = $"ns-{Guid.NewGuid():N}" }; database.Payments.Add(transaction); await database.SaveChangesAsync();
     try
     {
         var checkout = await payments.CreateCheckout(plan, request, transaction.ProviderReference);
@@ -320,10 +319,11 @@ app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrin
             await database.SaveChangesAsync();
             return Results.Problem("Secure checkout isn’t configured yet. Please contact the site administrator to enable payments.", statusCode: StatusCodes.Status503ServiceUnavailable);
         }
-        if (checkout.Status is "configuration_required" or "unsupported_payment_method" || string.IsNullOrWhiteSpace(checkout.PaymentLink))
+        if (string.IsNullOrWhiteSpace(checkout.PaymentLink))
         {
             database.Payments.Remove(transaction);
             await database.SaveChangesAsync();
+            return Results.Problem("Pesapal did not return a secure checkout link. Please try again shortly.", statusCode: StatusCodes.Status502BadGateway);
         }
         return Results.Ok(new { transactionId = transaction.Id, checkout });
     }
@@ -335,32 +335,32 @@ app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrin
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/payments/verify", async (string? tx_ref, string? transaction_id, ClaimsPrincipal principal, MarketplaceDbContext database, FlutterwavePaymentService payments) =>
+app.MapGet("/api/payments/verify", async (string? orderTrackingId, string? orderMerchantReference, ClaimsPrincipal principal, MarketplaceDbContext database, PesapalPaymentService payments) =>
 {
     var userId = GetUserId(principal);
     if (userId is null) return Results.Unauthorized();
-    if (string.IsNullOrWhiteSpace(tx_ref) || string.IsNullOrWhiteSpace(transaction_id)) return Results.BadRequest(new { message = "The payment reference is incomplete." });
-    var payment = await database.Payments.SingleOrDefaultAsync(item => item.UserId == userId && item.ProviderReference == tx_ref);
+    if (string.IsNullOrWhiteSpace(orderMerchantReference) || string.IsNullOrWhiteSpace(orderTrackingId)) return Results.BadRequest(new { message = "The payment reference is incomplete." });
+    var payment = await database.Payments.SingleOrDefaultAsync(item => item.UserId == userId && item.ProviderReference == orderMerchantReference);
     if (payment is null) return Results.NotFound(new { message = "Payment not found." });
     if (payment.Status == "paid") return Results.Ok(new { status = payment.Status });
-    var verified = await payments.VerifyPayment(transaction_id, payment.ProviderReference, payment.Amount);
+    var verified = await payments.VerifyPayment(orderTrackingId, payment.ProviderReference, payment.Amount);
     if (verified is null) return Results.Ok(new { status = payment.Status });
     payment.Status = "paid";
     await database.SaveChangesAsync();
     return Results.Ok(new { status = payment.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/payments/flutterwave/webhook", async (HttpRequest request, MarketplaceDbContext database, IConfiguration configuration) =>
+app.MapGet("/api/payments/pesapal/ipn", async (string? orderTrackingId, string? orderMerchantReference, MarketplaceDbContext database, PesapalPaymentService payments) =>
 {
-    var expectedHash = configuration["Flutterwave:WebhookHash"];
-    if (string.IsNullOrWhiteSpace(expectedHash) || request.Headers["verif-hash"] != expectedHash) return Results.Unauthorized();
-    var payload = await request.ReadFromJsonAsync<FlutterwaveWebhook>();
-    if (payload?.Data is null || !string.Equals(payload.Data.Status, "successful", StringComparison.OrdinalIgnoreCase)) return Results.Ok();
-    var payment = await database.Payments.SingleOrDefaultAsync(item => item.ProviderReference == payload.Data.TxRef);
-    if (payment is null || payment.Amount != payload.Data.Amount || payment.Status == "paid" || !string.Equals(payload.Data.Currency, "UGX", StringComparison.OrdinalIgnoreCase)) return Results.Ok();
+    if (string.IsNullOrWhiteSpace(orderTrackingId) || string.IsNullOrWhiteSpace(orderMerchantReference))
+        return Results.BadRequest(new { orderNotificationType = "IPNCHANGE", orderTrackingId = orderTrackingId ?? "", orderMerchantReference = orderMerchantReference ?? "", status = 500 });
+    var payment = await database.Payments.SingleOrDefaultAsync(item => item.ProviderReference == orderMerchantReference);
+    if (payment is null) return Results.Ok(new { orderNotificationType = "IPNCHANGE", orderTrackingId, orderMerchantReference, status = 200 });
+    var verified = await payments.VerifyPayment(orderTrackingId, payment.ProviderReference, payment.Amount);
+    if (verified is null) return Results.Ok(new { orderNotificationType = "IPNCHANGE", orderTrackingId, orderMerchantReference, status = 200 });
     payment.Status = "paid";
     await database.SaveChangesAsync();
-    return Results.Ok();
+    return Results.Ok(new { orderNotificationType = "IPNCHANGE", orderTrackingId, orderMerchantReference, status = 200 });
 });
 
 app.Run();
@@ -431,6 +431,4 @@ static PropertyEntity[] SeedProperties() =>
     new() { Title = "Titled plot near the expressway", Type = "Land", Location = "Kira, Wakiso", Price = 95000000, Bedrooms = 0, Bathrooms = 0, Area = 25, AreaUnit = "decimals", ImageUrl = "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=85", Description = "Flat residential land with a ready title and road access.", AgentName = "David Okello", AgentPhone = "+256 758 440 830" }
 ];
 
-record FlutterwaveWebhook(FlutterwaveWebhookData? Data);
-record FlutterwaveWebhookData(string? Status, string? TxRef, int Amount, string? Currency);
 record ContactRequest(string Name, string Email, string Message);

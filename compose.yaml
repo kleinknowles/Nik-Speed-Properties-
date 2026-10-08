@@ -37,10 +37,11 @@ services:
       Storage__S3__Region: ${S3_REGION:-auto}
       Storage__S3__AccessKeyId: ${S3_ACCESS_KEY_ID:-}
       Storage__S3__SecretAccessKey: ${S3_SECRET_ACCESS_KEY:-}
-      Flutterwave__SecretKey: ${FLUTTERWAVE_SECRET_KEY:-}
-      Flutterwave__WebhookHash: ${FLUTTERWAVE_WEBHOOK_HASH:-}
-      Flutterwave__BaseUrl: https://api.flutterwave.com/v3
-      Flutterwave__RedirectUrl: ${FLUTTERWAVE_REDIRECT_URL:?Set FLUTTERWAVE_REDIRECT_URL to the frontend payment completion URL}
+      Pesapal__ConsumerKey: ${PESAPAL_CONSUMER_KEY:-}
+      Pesapal__ConsumerSecret: ${PESAPAL_CONSUMER_SECRET:-}
+      Pesapal__NotificationId: ${PESAPAL_NOTIFICATION_ID:-}
+      Pesapal__BaseUrl: ${PESAPAL_BASE_URL:-https://cybqa.pesapal.com/pesapalv3}
+      Pesapal__CallbackUrl: ${PESAPAL_CALLBACK_URL:-http://localhost:3000/payment/complete}
     ports:
       - "${API_PORT:-5188}:8080"
     volumes:

@@ -4,7 +4,7 @@ A property marketplace for land, rentals, and homes for sale, operated by Nik-Sp
 
 ## Projects
 
-- `backend/NikSpeed.Api` — ASP.NET Core Web API with PostgreSQL/SQLite persistence, salted password hashes, private media storage, advertiser accounts, and Flutterwave checkout.
+- `backend/NikSpeed.Api` — ASP.NET Core Web API with PostgreSQL/SQLite persistence, salted password hashes, private media storage, advertiser accounts, and Pesapal hosted checkout.
 - `frontend` — Next.js 14 App Router frontend.
 
 ## Run locally
@@ -32,11 +32,13 @@ Configure secrets outside source control. For local development, use .NET user s
 cd backend/NikSpeed.Api
 dotnet user-secrets init
 dotnet user-secrets set "Jwt:Key" "a-long-unique-random-secret-at-least-32-characters"
-dotnet user-secrets set "Flutterwave:SecretKey" "FLWSECK_TEST-..."
-dotnet user-secrets set "Flutterwave:RedirectUrl" "http://localhost:3000/payment/complete"
+dotnet user-secrets set "Pesapal:ConsumerKey" "your-sandbox-consumer-key"
+dotnet user-secrets set "Pesapal:ConsumerSecret" "your-sandbox-consumer-secret"
+dotnet user-secrets set "Pesapal:NotificationId" "registered-ipn-guid"
+dotnet user-secrets set "Pesapal:CallbackUrl" "http://localhost:3000/payment/complete"
 ```
 
-The payment API creates a Flutterwave hosted checkout link when `Flutterwave:SecretKey` is set. Configure `Flutterwave:RedirectUrl` to the public frontend URL ending in `/payment/complete` and set `Flutterwave:WebhookHash` to the matching secret configured in Flutterwave. Register `POST /api/payments/flutterwave/webhook` as the webhook endpoint. Successful return redirects are independently verified against Flutterwave before marking a transaction paid; the signed webhook also confirms payments. Deploy the API behind HTTPS with a managed database (PostgreSQL or SQL Server is recommended over SQLite).
+The payment API creates a Pesapal hosted checkout link when its consumer key, consumer secret, and registered notification ID are set. Register `GET https://YOUR_API_HOST/api/payments/pesapal/ipn` in Pesapal and use its returned IPN ID as `Pesapal:NotificationId`. The API checks each callback and IPN against Pesapal's transaction-status API, and requires a completed UGX payment matching the stored order and amount before issuing credits. Use the sandbox base URL for testing and the live base URL only after your Pesapal merchant account is approved. Deploy the API behind HTTPS with a managed database (PostgreSQL or SQL Server is recommended over SQLite).
 
 The default SQLite database and JWT key are for local development. Production startup rejects the sample JWT key; set a unique `Jwt:Key` of at least 32 characters through the deployment secret store. Set `Database__Provider=PostgreSQL` in production; email addresses have a unique index, phone numbers are stored in international `+` format, and passwords use salted PBKDF2 hashes.
 
@@ -46,8 +48,8 @@ The API can run in Docker with PostgreSQL and persistent Docker volumes for both
 
 1. Install Docker Compose on the host or hosting provider.
 2. Copy `.env.example` to `.env` and set unique values for `POSTGRES_PASSWORD` and `JWT_KEY` (at least 32 random characters). Keep `.env` private; it is ignored by Git.
-3. Set `WEB_ORIGIN` to the exact public frontend origin (for example, `https://your-site.vercel.app`) and set `FLUTTERWAVE_REDIRECT_URL` to that origin followed by `/payment/complete`.
-4. For payment testing, enter Flutterwave **test** secret and webhook hash values in `.env`. Register `https://YOUR_API_HOST/api/payments/flutterwave/webhook` as the Flutterwave webhook URL. Without these credentials, checkout will report that payments need configuration. Never use live credentials for a test deployment.
+3. Set `WEB_ORIGIN` to the exact public frontend origin (for example, `https://your-site.onrender.com`) and set `PESAPAL_CALLBACK_URL` to that origin followed by `/payment/complete`.
+4. For payment testing, enter Pesapal sandbox credentials in `.env`. Register `https://YOUR_API_HOST/api/payments/pesapal/ipn` as a GET IPN URL in Pesapal, then set its returned ID as `PESAPAL_NOTIFICATION_ID`. Keep the sandbox base URL for tests; checkout stays disabled until the credentials and IPN ID are configured.
 5. Start the API and database with `docker compose up --build -d`. Check `http://YOUR_API_HOST:5188/health/ready`; it should return `{"status":"ready","database":"connected"}`.
 6. Set the frontend build variable `NEXT_PUBLIC_API_URL` to the API origin without a trailing slash, rebuild/redeploy the frontend, and verify sign-in, listings, uploads and test checkout.
 
@@ -58,13 +60,13 @@ The source repository does not provision an external hosting account or managed 
 
 This repository includes a Render Blueprint in `render.yaml` for the Next.js site, the .NET API, and PostgreSQL in Singapore. To provision it, push the repository (including the Blueprint) to GitHub, create/sign in to a Render account, choose **New → Blueprint**, connect this repository and branch, review the three free services, and deploy. Render generates the JWT signing key and connects the PostgreSQL URL; no application password needs to be added to the YAML. The web/API domains are resolved from Render's generated external hostnames.
 
-After deployment, configure `Flutterwave__SecretKey` and `Flutterwave__WebhookHash` on the API service using Flutterwave **test** credentials. Set its webhook to `https://YOUR_API_HOST/api/payments/flutterwave/webhook`. The API builds its payment return URL from the generated web origin. Checkout stays disabled until these provider values are set.
+After deployment, configure `Pesapal__ConsumerKey` and `Pesapal__ConsumerSecret` on the API service using Pesapal sandbox credentials. Register `https://YOUR_API_HOST/api/payments/pesapal/ipn` as a GET IPN URL with Pesapal and set its returned GUID as `Pesapal__NotificationId`. Keep `Pesapal__BaseUrl` set to `https://cybqa.pesapal.com/pesapalv3` for test checkout. Checkout stays disabled until these provider values are set. Switch to `https://pay.pesapal.com/v3` only when you are ready to use approved live merchant credentials.
 
 This is a short-lived test setup: Render's free PostgreSQL database is limited to 1 GB and expires 30 days after creation; free web services can sleep when idle and do not support persistent disks. The Blueprint uses local media storage for the preview, so uploaded files can disappear when the service restarts or redeploys. Do not use this free preview for customer records, permanent property uploads, or live payments. Configure durable object storage and a longer-lived database before production use.
 
 ## Database and uploads
 
-The API stores structured data in the configured relational database: account emails and phone numbers, salted password hashes, property metadata and media keys, enquiries, reservations and payment records. Card numbers, CVV and payment passwords must never be collected or written to this database; card payments stay on Flutterwave's hosted checkout.
+The API stores structured data in the configured relational database: account emails and phone numbers, salted password hashes, property metadata and media keys, enquiries, reservations and payment records. Card numbers, CVV and payment passwords must never be collected or written to this database; payment details stay on Pesapal's hosted checkout.
 
 Local development stores uploaded media under `backend/NikSpeed.Api/App_Data/uploads`. Docker Compose uses PostgreSQL plus a durable `uploads-data` volume. Production media storage can use a private S3-compatible bucket such as AWS S3, Cloudflare R2 or Backblaze B2 with `Storage__Provider=S3` and the `Storage__S3__*` secrets. Uploads are checked for supported file types, size and media signatures before storage, and are served through the API. The free Render preview uses local storage, so uploaded files may disappear when its web service restarts or redeploys.
 

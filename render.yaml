@@ -37,13 +37,15 @@ services:
           type: web
           name: nikspeed-test-web
           envVarKey: RENDER_EXTERNAL_HOSTNAME
-      - key: Flutterwave__BaseUrl
-        value: https://api.flutterwave.com/v3
-      - key: Flutterwave__SecretKey
+      - key: Pesapal__BaseUrl
+        value: https://cybqa.pesapal.com/pesapalv3
+      - key: Pesapal__ConsumerKey
         value: ""
-      - key: Flutterwave__WebhookHash
+      - key: Pesapal__ConsumerSecret
         value: ""
-      - key: Flutterwave__RedirectUrl
+      - key: Pesapal__NotificationId
+        value: ""
+      - key: Pesapal__CallbackUrl
         value: ""
 
   - type: web

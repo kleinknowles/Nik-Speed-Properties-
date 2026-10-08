@@ -119,7 +119,7 @@ Set all of these values (replace every example):
 - `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD` — the Lightsail database connection details. Use the private database endpoint.
 - `JWT_KEY` — a unique random secret. Generate a plain hexadecimal value with `openssl rand -hex 48` and copy it into nano.
 - `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` — the private bucket and restricted IAM key created in Step 5.
-- Leave both Flutterwave values blank while payments are unconfigured. Later, use **test** credentials first.
+- Use Pesapal sandbox credentials in `PESAPAL_CONSUMER_KEY` and `PESAPAL_CONSUMER_SECRET`; keep payments unconfigured until you have registered the IPN URL and received its ID.
 
 Save in nano with **Ctrl+O**, **Enter**, then **Ctrl+X**. Restrict access and confirm the file is ignored by Git:
 
@@ -155,7 +155,7 @@ In a browser, open `https://YOUR_DOMAIN/` and check the home page, account form,
 docker compose --env-file .env.aws -f compose.aws.yaml restart
 ```
 
-Confirm the same media still loads. Set up a Flutterwave **test** secret and webhook hash in `.env.aws` only if testing checkout, and register `https://YOUR_DOMAIN/api/payments/flutterwave/webhook` in the Flutterwave test account. Restart the API after changing the file:
+Confirm the same media still loads. For checkout testing, register `https://YOUR_DOMAIN/api/payments/pesapal/ipn` as a GET IPN URL in the Pesapal sandbox, place its returned ID in `PESAPAL_NOTIFICATION_ID`, and use Pesapal **sandbox** credentials in `.env.aws`. Keep `PESAPAL_BASE_URL=https://cybqa.pesapal.com/pesapalv3`. Restart the API after changing the file:
 
 ```bash
 docker compose --env-file .env.aws -f compose.aws.yaml up -d --force-recreate api
