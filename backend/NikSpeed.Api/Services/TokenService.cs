@@ -13,7 +13,7 @@ public class TokenService(IConfiguration configuration)
         var jwt = configuration.GetSection("Jwt");
         var credentials = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt["Key"]!)), SecurityAlgorithms.HmacSha256);
         var token = new JwtSecurityToken(jwt["Issuer"], jwt["Audience"],
-            [new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()), new Claim(ClaimTypes.Email, user.Email), new Claim(ClaimTypes.Name, user.Name)],
+            [new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()), new Claim(ClaimTypes.Email, user.Email ?? string.Empty), new Claim(ClaimTypes.Name, user.Name)],
             expires: DateTime.UtcNow.AddDays(7), signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);
     }

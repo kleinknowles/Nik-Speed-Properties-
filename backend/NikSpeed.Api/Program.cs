@@ -11,13 +11,19 @@ using NikSpeed.Api.Models;
 using NikSpeed.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+if (OperatingSystem.IsWindows() && string.Equals(builder.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
+    builder.Logging.ClearProviders().AddConsole();
 var jwt = builder.Configuration.GetSection("Jwt");
 var jwtKey = jwt["Key"] ?? throw new InvalidOperationException("Jwt:Key must be configured.");
 if (builder.Environment.IsProduction() && (jwtKey.Length < 32 || jwtKey.StartsWith("replace-this", StringComparison.OrdinalIgnoreCase)))
     throw new InvalidOperationException("Set Jwt:Key to a unique random secret of at least 32 characters before running in production.");
+if (builder.Environment.IsProduction() && useObjectStorage(builder.Configuration) && !hasObjectStorageSettings(builder.Configuration))
+    throw new InvalidOperationException("Set Storage:S3:Endpoint, Storage:S3:Bucket, Storage:S3:AccessKeyId and Storage:S3:SecretAccessKey before enabling S3 media storage.");
 
 var connectionString = builder.Configuration.GetConnectionString("Marketplace")
-    ?? throw new InvalidOperationException("ConnectionStrings:Marketplace must be configured.");
+    ?? (builder.Environment.IsProduction()
+        ? throw new InvalidOperationException("ConnectionStrings:Marketplace must be configured.")
+        : "Data Source=nikspeed.db");
 var usePostgres = builder.Configuration["Database:Provider"]?.Equals("PostgreSQL", StringComparison.OrdinalIgnoreCase) == true;
 if (builder.Environment.IsProduction() && !usePostgres)
     throw new InvalidOperationException("Set Database:Provider=PostgreSQL and configure a persistent production database.");
@@ -27,6 +33,10 @@ builder.Services.AddDbContext<MarketplaceDbContext>(options =>
     if (usePostgres) options.UseNpgsql(connectionString);
     else options.UseSqlite(connectionString);
 });
+if (builder.Configuration["Storage:Provider"]?.Equals("S3", StringComparison.OrdinalIgnoreCase) == true)
+    builder.Services.AddHttpClient<IObjectStorage, S3ObjectStorage>();
+else
+    builder.Services.AddSingleton<IObjectStorage, LocalObjectStorage>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddHttpClient<FlutterwavePaymentService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options => options.TokenValidationParameters = new()
@@ -77,7 +87,8 @@ using (var scope = app.Services.CreateScope())
         }
         await connection.CloseAsync();
     }
-    Directory.CreateDirectory(GetUploadDirectory(app.Environment, app.Configuration));
+    if (!useObjectStorage(app.Configuration))
+        Directory.CreateDirectory(GetUploadDirectory(app.Environment, app.Configuration));
     if (!database.Properties.Any())
     {
         database.Properties.AddRange(SeedProperties());
@@ -94,22 +105,30 @@ app.MapGet("/health/ready", async (MarketplaceDbContext database) =>
 
 app.MapPost("/api/auth/register", async (RegisterRequest request, MarketplaceDbContext database, TokenService tokens) =>
 {
-    if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrEmpty(request.Password) || request.Password.Length < 8)
-        return Results.BadRequest(new { message = "Name, email, and a password of at least 8 characters are required." });
-    var email = request.Email.Trim().ToLowerInvariant();
-    if (await database.Users.AnyAsync(user => user.Email == email)) return Results.Conflict(new { message = "An account with this email already exists." });
-    var user = new User { Name = request.Name.Trim(), Email = email, PasswordHash = HashPassword(request.Password) };
+    var email = NormalizeEmail(request.Email);
+    var phone = NormalizePhone(request.Phone);
+    if (string.IsNullOrWhiteSpace(request.Name) || (email is null && phone is null) || string.IsNullOrEmpty(request.Password) || request.Password.Length < 8)
+        return Results.BadRequest(new { message = "A name, email or phone number, and a password of at least 8 characters are required." });
+    if (email is null && phone is null) return Results.BadRequest(new { message = "Enter a valid email address or phone number with country code." });
+    if (email is not null && await database.Users.AnyAsync(user => user.Email == email)) return Results.Conflict(new { message = "An account with this email already exists." });
+    if (phone is not null && await database.Users.AnyAsync(user => user.Phone == phone)) return Results.Conflict(new { message = "An account with this phone number already exists." });
+    var user = new User { Name = request.Name.Trim(), Email = email ?? string.Empty, Phone = phone, PasswordHash = HashPassword(request.Password) };
     database.Users.Add(user); await database.SaveChangesAsync();
-    return Results.Ok(new AuthResponse(tokens.Create(user), user.Name, user.Email));
+    return Results.Ok(new AuthResponse(tokens.Create(user), user.Name, user.Email, user.Phone));
 });
 
 app.MapPost("/api/auth/login", async (LoginRequest request, MarketplaceDbContext database, TokenService tokens) =>
 {
-    if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrEmpty(request.Password)) return Results.Unauthorized();
-    var user = await database.Users.SingleOrDefaultAsync(item => item.Email == request.Email.Trim().ToLowerInvariant());
+    if (string.IsNullOrEmpty(request.Password)) return Results.Unauthorized();
+    var email = NormalizeEmail(request.Email);
+    var phone = NormalizePhone(request.Phone);
+    if (email is null && phone is null) return Results.Unauthorized();
+    var user = email is not null
+        ? await database.Users.SingleOrDefaultAsync(item => item.Email == email)
+        : await database.Users.SingleOrDefaultAsync(item => item.Phone == phone);
     return user is null || !VerifyPassword(request.Password, user.PasswordHash)
         ? Results.Unauthorized()
-        : Results.Ok(new AuthResponse(tokens.Create(user), user.Name, user.Email));
+        : Results.Ok(new AuthResponse(tokens.Create(user), user.Name, user.Email, user.Phone));
 });
 
 app.MapGet("/api/properties", async (MarketplaceDbContext database, string? type, string? location, int? minPrice, int? maxPrice, int? bedrooms, string? sort) =>
@@ -141,7 +160,7 @@ app.MapPost("/api/properties", async (CreateListingRequest request, ClaimsPrinci
     return Results.Created($"/api/properties/{property.Id}", Map(property));
 }).RequireAuthorization();
 
-app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principal, IWebHostEnvironment environment, IConfiguration configuration) =>
+app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principal, IConfiguration configuration, IObjectStorage storage) =>
 {
     if (GetUserId(principal) is null) return Results.Unauthorized();
     var kind = request.Query["kind"].ToString();
@@ -162,25 +181,16 @@ app.MapPost("/api/uploads", async (HttpRequest request, ClaimsPrincipal principa
     await using (var input = file.OpenReadStream()) _ = await input.ReadAsync(header);
     if (!HasValidMediaSignature(kind, extension, header))
         return Results.BadRequest(new { message = "The uploaded file is not a valid supported image or video." });
-    var fileName = $"{Guid.NewGuid():N}{extension}";
-    var directory = GetUploadDirectory(environment, configuration);
-    Directory.CreateDirectory(directory);
-    await using (var output = File.Create(Path.Combine(directory, fileName)))
-    await using (var input = file.OpenReadStream()) await input.CopyToAsync(output);
-    return Results.Ok(new { url = $"/api/uploads/{fileName}", kind, contentType });
+    var key = $"{Guid.NewGuid():N}{extension}";
+    await storage.SaveAsync(file, key, contentType, request.HttpContext.RequestAborted);
+    return Results.Ok(new { url = $"/api/uploads/{key}", kind, contentType });
 }).RequireAuthorization().WithMetadata(new RequestSizeLimitAttribute(130L * 1024 * 1024));
 
-app.MapGet("/api/uploads/{fileName}", (string fileName, IWebHostEnvironment environment, IConfiguration configuration) =>
+app.MapGet("/api/uploads/{fileName}", async (string fileName, IObjectStorage storage, CancellationToken cancellationToken) =>
 {
     if (fileName != Path.GetFileName(fileName)) return Results.BadRequest();
-    var path = Path.Combine(GetUploadDirectory(environment, configuration), fileName);
-    if (!File.Exists(path)) return Results.NotFound();
-    var contentType = Path.GetExtension(fileName).ToLowerInvariant() switch
-    {
-        ".jpg" or ".jpeg" => "image/jpeg", ".png" => "image/png", ".webp" => "image/webp",
-        ".mp4" => "video/mp4", ".mov" => "video/quicktime", ".webm" => "video/webm", _ => "application/octet-stream"
-    };
-    return Results.File(path, contentType, enableRangeProcessing: true);
+    var media = await storage.OpenReadAsync(fileName, cancellationToken);
+    return media is null ? Results.NotFound() : Results.File(media.Value.Content, media.Value.ContentType, enableRangeProcessing: true);
 });
 
 app.MapPut("/api/properties/{id:guid}", async (Guid id, CreateListingRequest request, ClaimsPrincipal principal, MarketplaceDbContext database) =>
@@ -269,6 +279,12 @@ app.MapPost("/api/payments/checkout", async (CheckoutRequest request, ClaimsPrin
     try
     {
         var checkout = await payments.CreateCheckout(plan, request, transaction.ProviderReference);
+        if (checkout.Status == "configuration_required")
+        {
+            database.Payments.Remove(transaction);
+            await database.SaveChangesAsync();
+            return Results.Problem("Secure checkout isn’t configured yet. Please contact the site administrator to enable payments.", statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
         if (checkout.Status is "configuration_required" or "unsupported_payment_method" || string.IsNullOrWhiteSpace(checkout.PaymentLink))
         {
             database.Payments.Remove(transaction);
@@ -315,6 +331,20 @@ app.MapPost("/api/payments/flutterwave/webhook", async (HttpRequest request, Mar
 app.Run();
 
 static Guid? GetUserId(ClaimsPrincipal principal) => Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
+static bool useObjectStorage(IConfiguration configuration) => configuration["Storage:Provider"]?.Equals("S3", StringComparison.OrdinalIgnoreCase) == true;
+static bool hasObjectStorageSettings(IConfiguration configuration) =>
+    !string.IsNullOrWhiteSpace(configuration["Storage:S3:Endpoint"]) &&
+    !string.IsNullOrWhiteSpace(configuration["Storage:S3:Bucket"]) &&
+    !string.IsNullOrWhiteSpace(configuration["Storage:S3:AccessKeyId"]) &&
+    !string.IsNullOrWhiteSpace(configuration["Storage:S3:SecretAccessKey"]);
+static string? NormalizeEmail(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+static string? NormalizePhone(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value)) return null;
+    var digits = new string(value.Where(char.IsDigit).ToArray());
+    if (digits.Length < 8 || digits.Length > 15) return null;
+    return $"+{digits}";
+}
 static string GetUploadDirectory(IWebHostEnvironment environment, IConfiguration configuration)
 {
     var configuredPath = configuration["Storage:UploadPath"];

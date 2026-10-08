@@ -1,10 +1,10 @@
-# Nik Speed Properties LLC
+# Nik-Speed Properties LLC
 
 A property marketplace for land, rentals, and homes for sale, operated by Nik Speed Properties LLC. Advertisers buy listing credits before publishing properties.
 
 ## Projects
 
-- `backend/NikSpeed.Api` — ASP.NET Core Web API with SQLite persistence, JWT advertiser accounts, and Flutterwave checkout.
+- `backend/NikSpeed.Api` — ASP.NET Core Web API with PostgreSQL/SQLite persistence, salted password hashes, private media storage, advertiser accounts, and Flutterwave checkout.
 - `frontend` — Next.js 14 App Router frontend.
 
 ## Run locally
@@ -14,7 +14,7 @@ cd backend/NikSpeed.Api
 dotnet run
 ```
 
-The API listens on `http://localhost:5188`. On its first run, it creates `nikspeed.db` and seeds example properties.
+The API listens on `http://localhost:5188`. On its first run, it creates `nikspeed.db` and seeds example properties. Account emails and optional phone numbers, salted password hashes, properties, enquiries, reservations and payment references are stored in that database. Plain-text passwords are never stored. Phone accounts sign in with their account password; SMS verification requires a separate SMS provider.
 
 ```powershell
 cd frontend
@@ -38,7 +38,7 @@ dotnet user-secrets set "Flutterwave:RedirectUrl" "http://localhost:3000/payment
 
 The payment API creates a Flutterwave hosted checkout link when `Flutterwave:SecretKey` is set. Configure `Flutterwave:RedirectUrl` to the public frontend URL ending in `/payment/complete` and set `Flutterwave:WebhookHash` to the matching secret configured in Flutterwave. Register `POST /api/payments/flutterwave/webhook` as the webhook endpoint. Successful return redirects are independently verified against Flutterwave before marking a transaction paid; the signed webhook also confirms payments. Deploy the API behind HTTPS with a managed database (PostgreSQL or SQL Server is recommended over SQLite).
 
-The default SQLite database and JWT key are for local development. Production startup rejects the sample JWT key; set a unique `Jwt:Key` of at least 32 characters through the deployment secret store.
+The default SQLite database and JWT key are for local development. Production startup rejects the sample JWT key; set a unique `Jwt:Key` of at least 32 characters through the deployment secret store. Set `Database__Provider=PostgreSQL` in production; email addresses have a unique index, phone numbers are stored in international `+` format, and passwords use salted PBKDF2 hashes.
 
 ## Hosted API and persistent database (test deployment)
 
@@ -60,6 +60,12 @@ This repository includes a Render Blueprint in `render.yaml` for the Next.js sit
 
 After deployment, configure `Flutterwave__SecretKey` and `Flutterwave__WebhookHash` on the API service using Flutterwave **test** credentials. Set its webhook to `https://YOUR_API_HOST/api/payments/flutterwave/webhook`. The API builds its payment return URL from the generated web origin. Checkout stays disabled until these provider values are set.
 
-This is a short-lived test setup: Render's free PostgreSQL database is limited to 1 GB and expires 30 days after creation; free web services can sleep when idle and do not support persistent disks. Uploaded property media is therefore temporary and can disappear on a service restart or deploy. Do not use this free setup for real customer data or live payments. Persistent media storage and a longer-lived database require paid hosting or a separate object-storage service.
+This is a short-lived test setup: Render's free PostgreSQL database is limited to 1 GB and expires 30 days after creation; free web services can sleep when idle and do not support persistent disks. The Blueprint uses private S3-compatible media storage. Set `Storage__S3__Endpoint`, `Storage__S3__Bucket`, `Storage__S3__AccessKeyId` and `Storage__S3__SecretAccessKey` on the API service before uploads are available. These values come from a storage bucket you create; they must never be committed. A longer-lived database and object-storage plan are needed for real customer data or live payments.
+
+## Database and uploads
+
+The API stores structured data in the configured relational database: account emails and phone numbers, salted password hashes, property metadata and media keys, enquiries, reservations and payment records. Card numbers, CVV and payment passwords must never be collected or written to this database; card payments stay on Flutterwave's hosted checkout.
+
+Local development stores uploaded media under `backend/NikSpeed.Api/App_Data/uploads`. Docker Compose uses PostgreSQL plus a durable `uploads-data` volume. Production media storage can use a private S3-compatible bucket such as AWS S3, Cloudflare R2 or Backblaze B2 with `Storage__Provider=S3` and the `Storage__S3__*` secrets. Uploads are checked for supported file types, size and media signatures before storage, and are served through the API. Render declares the bucket settings as unsynced secrets because an external storage account must be provisioned separately.
 
 Render provisions the Blueprint only after the GitHub repository is pushed and connected to a Render account. No Render or GitHub credentials are available in this workspace, so the cloud resources still need to be created from the Render dashboard.
