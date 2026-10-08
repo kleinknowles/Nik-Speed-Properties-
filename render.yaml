@@ -21,17 +21,7 @@ services:
       - key: Database__Provider
         value: PostgreSQL
       - key: Storage__Provider
-        value: S3
-      - key: Storage__S3__Region
-        value: auto
-      - key: Storage__S3__Endpoint
-        sync: false
-      - key: Storage__S3__Bucket
-        sync: false
-      - key: Storage__S3__AccessKeyId
-        sync: false
-      - key: Storage__S3__SecretAccessKey
-        sync: false
+        value: Local
       - key: ConnectionStrings__Marketplace
         fromDatabase:
           name: nikspeed-test-db

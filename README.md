@@ -60,7 +60,7 @@ This repository includes a Render Blueprint in `render.yaml` for the Next.js sit
 
 After deployment, configure `Flutterwave__SecretKey` and `Flutterwave__WebhookHash` on the API service using Flutterwave **test** credentials. Set its webhook to `https://YOUR_API_HOST/api/payments/flutterwave/webhook`. The API builds its payment return URL from the generated web origin. Checkout stays disabled until these provider values are set.
 
-This is a short-lived test setup: Render's free PostgreSQL database is limited to 1 GB and expires 30 days after creation; free web services can sleep when idle and do not support persistent disks. The Blueprint uses private S3-compatible media storage. Set `Storage__S3__Endpoint`, `Storage__S3__Bucket`, `Storage__S3__AccessKeyId` and `Storage__S3__SecretAccessKey` on the API service before uploads are available. These values come from a storage bucket you create; they must never be committed. A longer-lived database and object-storage plan are needed for real customer data or live payments.
+This is a short-lived test setup: Render's free PostgreSQL database is limited to 1 GB and expires 30 days after creation; free web services can sleep when idle and do not support persistent disks. The Blueprint uses local media storage for the preview, so uploaded files can disappear when the service restarts or redeploys. Do not use this free preview for customer records, permanent property uploads, or live payments. Configure durable object storage and a longer-lived database before production use.
 
 ## Database and uploads
 
