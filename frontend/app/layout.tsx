@@ -2,6 +2,7 @@ import "./globals.css";
 import "./marketplace.css";
 import "./pages.css";
 import { InstallPrompt } from "../components/InstallPrompt";
+import { ContactAssistant } from "../components/ContactAssistant";
 
 export const metadata = {
   title: "Nik-Speed Properties LLC",
@@ -14,5 +15,5 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body><div className="ambient-backdrop" aria-hidden="true"><div className="ambient-photo ambient-photo-one"/><div className="ambient-photo ambient-photo-two"/><div className="ambient-photo ambient-photo-three"/><div className="ambient-glow"/></div><div className="site-content">{children}<InstallPrompt /></div></body></html>;
+  return <html lang="en"><body><div className="ambient-backdrop" aria-hidden="true"><div className="ambient-photo ambient-photo-one"/><div className="ambient-photo ambient-photo-two"/><div className="ambient-photo ambient-photo-three"/><div className="ambient-glow"/></div><div className="site-content">{children}<InstallPrompt /><ContactAssistant /></div></body></html>;
 }
